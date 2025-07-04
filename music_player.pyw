@@ -1,157 +1,68 @@
+# changed to use pygame.mixer due an issue with audioplayer
+# audioplayer is not thread-safe, has blocking .play(), no callback when it finish playing 
+# added b64 icon to so that pystray use that and no need for real icon
 import tkinter as tk
-import audioplayer
 import os
-import time
 import fnmatch
-import threading # Import for running pystray in a separate thread
-import pystray # Import pystray library
-from PIL import Image, ImageTk # Import Pillow for image handling
+import pygame
+import base64
+import io
+import threading
+from pystray import Icon, MenuItem, Menu
+from PIL import Image, ImageDraw
 
-# Define the path to your icon file
-# Make sure you have an 'icon.png' file or change this path
-ICON_PATH = "icon.png"
-# Fallback if the icon file is not found
-FALLBACK_ICON_PATH = None # Or specify a path to a default icon if you have one
+# Base64-encoded 64x64 icon PNG (white text "MP" on black background)
+ICON_BASE64 = '''iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAMAAABg3Am1AAAAAXNSR0IArs4c6QAAABhQTFRF7u7u////AAAAWlpaMTExqqqqysrKg4ODQ8UruAAAAN1JREFUSImtVEEOwyAMAxfK/3/crtJWCDHE0pA4AHFiE0PKOSVv1ubvu5ufCRAAgwAslQqQKf1RA1QNBMAp+bKXAK/GipJWAyA1lpSAKmhoLqmlNR5empfqXGNnjVuG6CVDam/vgkPQMNSKabBPKQBItwhFwyxbBEQoYZ9/AJRT1SD2Iat9SHIfmualVMzZ3kvjWYBSJH//HgxgS+kM1vgCmj2bQs/ndzmiGip+gwCs1Hew6+gXCABYfpDr4ABGqFuWPr7Qlr4Lw0jTEMg/ALjH3Gvl4XOv6/28FsE5X2XyBlAFv4/iAAAAAElFTkSuQmCC
+'''
 
 
 class SimpleMusicPlayer:
     def __init__(self, root):
         self.root = root
-        self.root.geometry("300x50")
+        # Desired window size
+        win_width, win_height = 300, 50
+        self.root.geometry(f"{win_width}x{win_height}")
 
+        # Position it bottom-right
+        self.root.update_idletasks()
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+
+        x = screen_width - win_width - 10  # 10 px from right edge
+        y = screen_height - win_height - 50  # ~50 px from bottom for taskbar
+
+        self.root.geometry(f"{win_width}x{win_height}+{x}+{y}")
         self.bg_dark = '#2e2e2e'
         self.fg_white = 'white'
         self.btn_dark = '#3c3c3c'
         self.active_bg = '#4a4a4a'
-
         self.root.config(bg=self.bg_dark)
 
-        self.player = None
+        pygame.mixer.init()
         self.current_song_index = 0
         self.songs = []
-
+        self.is_playing = False
         self.music_directory = "."
         self.allowed_extensions = ["*.mp3", "*.wav"]
 
         self.load_songs_from_directory(self.music_directory)
-
         if not self.songs:
             self.songs = ["No songs available"]
             self.current_song_index = -1
-        else:
-             self.songs.sort()
-
-        self.is_playing = False
 
         self.create_widgets()
         self.update_window_title()
+        self.root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
 
-        # --- System Tray Integration ---
         self.icon = None
-        self._create_tray_icon() # Create and start the tray icon thread
-
-        # Change the behavior when the close button is clicked - hide the window instead of quitting
-        self.root.protocol("WM_DELETE_WINDOW", self.hide_window)
-        # --- End System Tray Integration ---
-
-
-    def _create_tray_icon(self):
-        """Creates and starts the system tray icon in a separate thread."""
-        try:
-            # Load the icon image
-            # Attempt to load the specified icon first
-            if os.path.exists(ICON_PATH):
-                 image = Image.open(ICON_PATH)
-            elif FALLBACK_ICON_PATH and os.path.exists(FALLBACK_ICON_PATH):
-                 image = Image.open(FALLBACK_ICON_PATH)
-            else:
-                 # Create a simple fallback image if no icon file is found
-                 # This is a basic black and white square, better than nothing
-                 image = Image.new('RGB', (64, 64), color = 'black')
-                 from PIL import ImageDraw
-                 d = ImageDraw.Draw(image)
-                 d.text((10,20), "MP", fill="white")
-
-
-            # Define the menu for the tray icon
-            # pystray.MenuItem takes text, action function, and an optional checked state
-            menu = (
-                pystray.MenuItem('Show', self.show_window),
-                pystray.MenuItem('Hide', self.hide_window),
-                pystray.MenuItem('Quit', self.quit_application)
-            )
-
-            # Create the Icon instance
-            self.icon = pystray.Icon("simple_music_player", image, "Simple Music Player", menu)
-
-            # Run the icon in a separate thread
-            # The target function will be self.icon.run, which is blocking
-            icon_thread = threading.Thread(target=self.icon.run)
-            icon_thread.daemon = True # Daemon thread exits when main thread exits
-            icon_thread.start()
-
-        except Exception as e:
-            # If there's an error creating the tray icon (e.g., Pillow not installed, bad icon file)
-            print(f"Warning: Could not create system tray icon: {e}")
-            self.icon = None # Ensure icon is None if creation failed
-            # Revert close behavior to normal destroy if tray icon fails
-            self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
-
-
-    def show_window(self, icon=None, item=None):
-        """Shows the Tkinter window."""
-        # Use root.after to safely interact with Tkinter from another thread
-        self.root.after(0, self.root.deiconify)
-
-    def hide_window(self, icon=None, item=None):
-        """Hides the Tkinter window."""
-        # Use root.after to safely interact with Tkinter from another thread
-        self.root.after(0, self.root.withdraw)
-
-    def quit_application(self, icon=None, item=None):
-        """Stops playback, stops the tray icon, and quits the Tkinter application."""
-        # Use root.after to safely interact with Tkinter from another thread
-        self.root.after(0, self._perform_quit)
-
-    def _perform_quit(self):
-        """Internal method to perform the actual quitting."""
-        self.stop_song() # Stop music playback
-
-        if self.icon:
-            try:
-                self.icon.stop() # Stop the tray icon thread
-            except Exception:
-                pass
-
-        self.root.quit() # Stop the Tkinter main loop
-        self.root.destroy() # Destroy the window
-
-
-    # --- Existing methods from the previous code ---
+        self.create_tray_icon()
 
     def load_songs_from_directory(self, directory):
-        self._scan_directory(directory)
-
-    def _scan_directory(self, current_dir):
-        try:
-            try:
-                items = os.listdir(current_dir)
-            except OSError:
-                pass
-
-            for item_name in items:
-                item_path = os.path.join(current_dir, item_name)
-
-                if os.path.isdir(item_path):
-                    self._scan_directory(item_path)
-                elif os.path.isfile(item_path):
-                    for pattern in self.allowed_extensions:
-                        if fnmatch.fnmatch(item_path.lower(), pattern.lower()):
-                            self.songs.append(item_path)
-                            break
-
-        except Exception:
-            pass
+        for root_dir, _, files in os.walk(directory):
+            for ext in self.allowed_extensions:
+                for file in fnmatch.filter(files, ext):
+                    self.songs.append(os.path.join(root_dir, file))
+        self.songs.sort()
 
     def create_widgets(self):
         control_frame = tk.Frame(self.root, bg=self.bg_dark)
@@ -159,30 +70,15 @@ class SimpleMusicPlayer:
 
         state = tk.NORMAL if self.current_song_index != -1 else tk.DISABLED
 
-        self.prev_button = tk.Button(
-            control_frame,
-            text="Prev",
-            command=self.prev_song,
-            state=state,
-            bg=self.btn_dark, fg=self.fg_white, activebackground=self.active_bg, activeforeground=self.fg_white,
-            borderwidth=1, relief=tk.FLAT
-        )
-        self.play_stop_button = tk.Button(
-            control_frame,
-            text="Play",
-            command=self.toggle_play_stop,
-            state=state,
-            bg=self.btn_dark, fg=self.fg_white, activebackground=self.active_bg, activeforeground=self.fg_white,
-            borderwidth=1, relief=tk.FLAT
-        )
-        self.next_button = tk.Button(
-            control_frame,
-            text="Next",
-            command=self.next_song,
-            state=state,
-            bg=self.btn_dark, fg=self.fg_white, activebackground=self.active_bg, activeforeground=self.fg_white,
-            borderwidth=1, relief=tk.FLAT
-        )
+        self.prev_button = tk.Button(control_frame, text="Prev", command=self.prev_song,
+                                     state=state, bg=self.btn_dark, fg=self.fg_white,
+                                     activebackground=self.active_bg)
+        self.play_stop_button = tk.Button(control_frame, text="Play", command=self.toggle_play_stop,
+                                          state=state, bg=self.btn_dark, fg=self.fg_white,
+                                          activebackground=self.active_bg)
+        self.next_button = tk.Button(control_frame, text="Next", command=self.next_song,
+                                     state=state, bg=self.btn_dark, fg=self.fg_white,
+                                     activebackground=self.active_bg)
 
         self.prev_button.grid(row=0, column=0, padx=5)
         self.play_stop_button.grid(row=0, column=1, padx=5)
@@ -194,106 +90,96 @@ class SimpleMusicPlayer:
         return None
 
     def play_song(self):
-        if self.current_song_index == -1 or not self.songs or self.songs == ["No songs available"]:
-            self.is_playing = False
+        if self.current_song_index == -1:
             return
 
-        if self.player:
-            self.stop_song()
+        pygame.mixer.music.stop()
 
         song_path = self.load_song(self.current_song_index)
-
         if song_path and os.path.exists(song_path):
             try:
-                time.sleep(0.05)
-                self.player = audioplayer.AudioPlayer(song_path)
-                self.player.play()
+                pygame.mixer.music.load(song_path)
+                pygame.mixer.music.play()
                 self.is_playing = True
                 self.play_stop_button.config(text="Stop")
                 self.update_window_title()
+                self.check_music_end()
             except Exception:
-                self.player = None
-                self.is_playing = False
-                self.play_stop_button.config(text="Play")
                 self.update_window_title("Error playing song")
         else:
-            self.player = None
-            self.is_playing = False
-            self.play_stop_button.config(text="Play")
-            self.update_window_title("Song file not found")
+            self.update_window_title("Song not found")
 
     def stop_song(self):
-        if self.player:
-            try:
-                self.player.stop()
-            except Exception:
-                pass
-            finally:
-                try:
-                   del self.player
-                except AttributeError:
-                   pass
-                self.player = None
-                self.is_playing = False
-                self.play_stop_button.config(text="Play")
+        pygame.mixer.music.stop()
+        self.is_playing = False
+        self.play_stop_button.config(text="Play")
 
-    def toggle_play_stop(self):
-        if self.current_song_index == -1 or not self.songs or self.songs == ["No songs available"]:
-             return
-
+    def toggle_play_stop(self, *args):
         if self.is_playing:
-             self.stop_song()
+            self.stop_song()
         else:
             self.play_song()
 
-    def prev_song(self):
-        if not self.songs or self.current_song_index == -1 or self.songs == ["No songs available"]:
-             return
+    def prev_song(self, *args):
+        if self.current_song_index > 0:
+            self.current_song_index -= 1
+        else:
+            self.current_song_index = len(self.songs) - 1
+        self.play_song()
 
-        was_playing = self.is_playing
-
-        self.stop_song()
-
-        self.current_song_index = (self.current_song_index - 1) % len(self.songs)
-
-        self.update_window_title()
-
-        if was_playing:
-            self.play_song()
-
-    def next_song(self):
-        if not self.songs or self.current_song_index == -1 or self.songs == ["No songs available"]:
-             return
-
-        was_playing = self.is_playing
-
-        self.stop_song()
-
+    def next_song(self, *args):
         self.current_song_index = (self.current_song_index + 1) % len(self.songs)
+        self.play_song()
 
-        self.update_window_title()
-
-        if was_playing:
-            self.play_song()
+    def check_music_end(self):
+        if not pygame.mixer.music.get_busy() and self.is_playing:
+            self.is_playing = False
+            self.next_song()
+        else:
+            self.root.after(500, self.check_music_end)
 
     def update_window_title(self, message=None):
         if message:
-            window_title_suffix = message
-        elif self.current_song_index != -1 and self.songs != ["No songs available"]:
-            song_name = os.path.basename(self.songs[self.current_song_index])
-            window_title_suffix = song_name
+            title = message
+        elif self.current_song_index != -1:
+            title = os.path.basename(self.songs[self.current_song_index])
         else:
-             window_title_suffix = "No songs loaded"
-
+            title = "No songs"
         prefix = "Playing: " if self.is_playing else ""
-        self.root.title(f"{prefix}{window_title_suffix}")
+        self.root.title(prefix + title)
 
-    def on_closing(self):
-        # This method is now primarily a fallback if tray icon creation fails
-        # The default close button behavior is changed to hide_window
+    def hide_to_tray(self):
+        self.root.withdraw()
+
+    def show_window(self, *args):
+        self.root.after(0, self.root.deiconify)
+
+    def quit_app(self, *args):
         self.stop_song()
-        self.root.destroy()
+        pygame.mixer.quit()
+        if self.icon:
+            self.icon.stop()
+        self.root.quit()
 
+    def create_tray_icon(self):
+        try:
+            img_data = base64.b64decode(ICON_BASE64)
+            image = Image.open(io.BytesIO(img_data))
+        except Exception:
+            image = Image.new('RGB', (64, 64), color='black')
+            draw = ImageDraw.Draw(image)
+            draw.text((10, 20), "MP", fill='white')
+        menu = Menu(
+            MenuItem('▶ Play / Stop', self.toggle_play_stop),
+            MenuItem('⏮ Prev', self.prev_song),
+            MenuItem('⏭ Next', self.next_song),
+            Menu.SEPARATOR,
+            MenuItem('🪟 Show', self.show_window),
+            MenuItem('❌ Hide', self.hide_to_tray),
+            MenuItem('⛔ Quit', self.quit_app)
+        )
+        self.icon = Icon("SimpleMusicPlayer", image, "Music Player", menu)
+        threading.Thread(target=self.icon.run, daemon=True).start()
 
 if __name__ == "__main__":
     root = tk.Tk()
