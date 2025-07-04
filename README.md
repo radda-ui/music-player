@@ -1,6 +1,6 @@
 # Music Player
 
-A minimalist music player application built with Tkinter and audioplayer, featuring basic playback controls and a system tray icon.
+A minimalist music player application built with Tkinter and pygame.mixer , featuring basic playback controls and a system tray icon.
 
 ## Features
 
